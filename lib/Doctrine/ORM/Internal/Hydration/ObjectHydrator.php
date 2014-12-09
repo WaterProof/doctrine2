@@ -210,6 +210,45 @@ class ObjectHydrator extends AbstractHydrator
      *
      * @param array  $data     The instance data.
      * @param string $dqlAlias The DQL alias of the entity's class.
+     *
+     * @return object The entity.
+     *
+     * @throws HydrationException
+     */
+    private function getEntity(array $data, $dqlAlias)
+    {
+        $className = $this->_rsm->aliasMap[$dqlAlias];
+        if (isset($this->_rsm->discriminatorColumns[$dqlAlias])) {
+            $fieldName = $this->_rsm->discriminatorColumns[$dqlAlias];
+            if ( ! isset($this->_rsm->metaMappings[$fieldName])) {
+                throw HydrationException::missingDiscriminatorMetaMappingColumn($className, $fieldName, $dqlAlias);
+            }
+            $discrColumn = $this->_rsm->metaMappings[$fieldName];
+            if ( ! isset($data[$discrColumn])) {
+                throw HydrationException::missingDiscriminatorColumn($className, $discrColumn, $dqlAlias);
+            }
+            if ($data[$discrColumn] === "") {
+                throw HydrationException::emptyDiscriminatorValue($dqlAlias);
+            }
+            $discrMap = $this->_metadataCache[$className]->discriminatorMap;
+            if ( ! isset($discrMap[$data[$discrColumn]])) {
+                throw HydrationException::invalidDiscriminatorValue($data[$discrColumn], array_keys($discrMap));
+            }
+            $className = $discrMap[$data[$discrColumn]];
+            unset($data[$discrColumn]);
+        }
+        if (isset($this->_hints[Query::HINT_REFRESH_ENTITY]) && isset($this->rootAliases[$dqlAlias])) {
+            $this->registerManaged($this->_metadataCache[$className], $this->_hints[Query::HINT_REFRESH_ENTITY], $data);
+        }
+        $this->_hints['fetchAlias'] = $dqlAlias;
+        return $this->_uow->createEntity($className, $data, $this->_hints);
+    }
+
+    /**
+     * Gets an entity instance.
+     *
+     * @param array  $data     The instance data.
+     * @param string $dqlAlias The DQL alias of the entity's class.
      * @return object The entity.
      */
     private function _getEntity(array $data, $dqlAlias)
@@ -349,6 +388,8 @@ class ObjectHydrator extends AbstractHydrator
                     continue;
                 }
 
+                $relationField  = $this->_rsm->relationMap[$dqlAlias];
+
                 // Get a reference to the parent object to which the joined element belongs.
                 if ($this->_rsm->isMixed && isset($this->_rootAliases[$parentAlias])) {
                     $first = reset($this->_resultPointers);
@@ -356,7 +397,13 @@ class ObjectHydrator extends AbstractHydrator
                 } else if (isset($this->_resultPointers[$parentAlias])) {
                     $parentObject = $this->_resultPointers[$parentAlias];
                 } else {
-                    // Parent object of relation not found, so skip it.
+                    // Parent object of relation not found, mark as not-fetched again
+                    $element = $this->getEntity($data, $dqlAlias);
+                    // Update result pointer and provide initial fetch data for parent
+                    $this->resultPointers[$dqlAlias] = $element;
+                    $rowData['data'][$parentAlias][$relationField] = $element;
+                    // Mark as not-fetched again
+                    unset($this->_hints['fetched'][$parentAlias][$relationField]);
                     continue;
                 }
 
